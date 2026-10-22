@@ -21,7 +21,7 @@ class LinearRegression:
     if not isinstance(input_size, int) or isinstance(input_size, bool) or input_size<=0:
       raise ValueError("input_size must be positive integer.")
 
-    if not np.isfinite(learning_rate) or learning_rate <= 0:
+    if not isinstance(learning_rate, (int, float)) or isinstance(learning_rate, bool) or not np.isfinite(learning_rate) or learning_rate <= 0:
       raise ValueError("learning_rate must be positive and finite.")
 
     if not isinstance(epochs, int) or isinstance(epochs, bool) or epochs <=0:
