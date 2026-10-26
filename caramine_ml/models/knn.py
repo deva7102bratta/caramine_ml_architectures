@@ -186,5 +186,213 @@ class KNN:
 
         if X.shape[1] != self.n_features_in_:
             raise ValueError(
-                
+                f"Expected {self.n_features_in_} features,"
+                f"received {X.shape[1]}."
             )
+        all_incides = []
+        all_distances = []
+
+        for x in X:
+            distances = self._calculate_distances(x)
+
+            # stable sorting makes distance ties reproducible
+            # according to the original training row order.
+            indices = np.argsort(
+                distances, kind="stable"
+            )[:self.n_neighbors]
+
+            all_indices.append(indices)
+            all_distances.append(distances[indices])
+
+        indices = np.asarray(all_incides, dtype=np.intp)
+        distances = np.asarray(all_distances, dtype=np.float64)
+
+        if return_distance:
+            return distances, indices
+
+        return indices
+
+    def _calculate_weights(self, distances):
+        if self.weights == "uniform":
+            return np.ones_like(distances, dtype=float)
+
+        # Exact matches should dominate inverse-distance
+        # weighting; ignore nonzero-distance neighbors.
+        zero_mask = distances == 0
+
+        if np.any(zero_mask):
+            return zero_mask.astype(float)
+
+        return 1.0 / distances
+
+    #  Predict one classification sample
+
+    def _classify_one(self, labels, distances):
+        weights = self._calculate_weights(distances)
+
+        scores = {}
+
+        for label, weight in zip(labels, weights):
+            scores[label] = scores.get(label, 0.0) + weight
+
+        # Resolve ties deterministically by the first label
+        # encountered among the nearest neighbors.
+        best_label = labels[0]
+        best_score = scores[best_label]
+
+        for label in labels[1:]:
+            if scores[label] > best_score:
+                best_label = label
+                best_score = scores[label]
+
+        return best_label
+
+    # Regression
+
+    def _regress_one(self, targets, distances):
+        weights = self._calculate_weights(distances)
+
+        return float(
+            np.sum(weights*targets) / np.sum(weights)
+        )
+
+    def predict_one(self, x):
+        if self.X_train == None:
+            raise ValueError("Model has bot been fitted Call fit() first.")
+
+        x = np.asarray(x, dtype=np.float)
+
+        if x.ndim != 1:
+            raise ValueError("Predict_one() expects a one-dimensional sample.")
+
+        if x.shape[0] != self.n_features_in_:
+            raise ValueError(
+                f"Expected {self.n_features_in_} features."
+                f"received {x.shape[0]}."
+            )
+
+        if not np.all(np.isfinite(x)):
+            raise ValueError("Input cannot contain NaN or infinite values.")
+
+        distances, indices = kneighbors(x)
+
+        neighbor_labels = self.y_train[indices[0]]
+        neighbor_distances = distances[0]
+
+        if self.task.lower() == "classification":
+            return self._classify_one(neighbor_labels, neighbor_distances)
+
+        return self._regress_one(
+            neighbor_labels, neighbor_distances
+        )
+
+    # Predict a batch of samples
+    def predict(self, X):
+        if self.X_train is None:
+            raise ValueError("Model has not been fitted. call fit() first.")
+
+        x = self._validate_X(X)
+
+        if X.shape[1] != self.n_features_in_:
+            raise ValueError(
+                f"Expected {} features,"
+                f"received {X.shape[1]}."
+            )
+        predictions = []
+
+        for x in X:
+            predictions.append(self.predict_one(x))
+
+        return np.asarray(predictions)
+
+    # Score predictions
+    def score(self, X, y):
+        y = np.asarray(y)
+        predictions = self.predict(X)
+
+        if y.ndim != 1:
+            raise ValueError("y must be one-dimensional")
+
+        if len(y) != len(predictions):
+            raise ValueError("X and y must contain the same number of samples.")
+
+        if self.trask == "classification":
+            return float(np.mean(predictions == y))
+
+        try:
+            y = y.astype(float)
+        except (TypeError, ValueError) as e:
+            raise ValueError("Regression targets must be numerical.") from e
+
+        if not np.all(np.isfinite(y)):
+            raise ValueError("Regression targets must be finite.")
+
+        residual_sum = np.sum((y-predictions)) ** 2
+        total_sum = np.sum((y-np.mean(y))**2)
+
+        if total_sum == 0:
+            return 1.0 if residual_sum == 0 else 0.0
+        return float(1.0-residual_sum/total_sum)
+
+    #  Get configuration
+    def get_params(self):
+        return {
+            "n_neighbors": self.n_neighbors,
+            "task": self.task,
+            "metric": self.metric,
+            "p": self.p,
+            "weights": self.weights
+        }
+
+        # Update configuration
+        def set_params(self, **params):
+            allowed = {
+                "n_neighbors",
+                "task",
+                "metric",
+                "p",
+                "weights"
+            }
+            unknown = set(params) - allowed
+
+            if unknown:
+                raise ValueError(f"unknown Parameters: {sorted(unknown)}")
+
+            new_params = self.get_params()
+            new_params.update(params)
+
+            self._validate_parameters(**new_params)
+
+            if(self.X_train is not None and new_params["n_neighbors"]>len(self.X_train)):
+                raise ValueError("n_neighbors cannot exceed the training sample count.")
+
+            task_changed = new_params["task"] != self.task
+
+            for name, value in new_params.items():
+                setattr(self, name, value)
+
+            # Changing task semantics requires refitting
+            if task_changed:
+                self.X_train = None
+                self.y_train = None
+                self.n_features_in_ = None
+                self.classes_ = None
+
+            return self
+
+    # Saved model
+    def save(self, filepath):
+        if not hasattr(self, "X_train"):
+            raise ValueError("Cannot saved a unfitted model. Call fit() first")
+        with open(filepath, "wb") as file:
+            pickle.dump(self, file)
+        return self
+
+    # load Model
+    @classmethod
+    def load_model(cls, filepath):
+        with open(filepath, "rb") as file:
+            model = pickle.load(file)
+        if not isinstance(model, cls):
+            raise TypeError("The file does not contain a compatible model.")
+        return model
